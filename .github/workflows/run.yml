@@ -1,0 +1,38 @@
+name: ReClassic Sniper Cron
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+# Grant GitHub actions permission to commit the state.json file back to the repo
+permissions:
+  contents: write
+
+jobs:
+  snipe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install Requirements
+        run: pip install -r requirements.txt
+        
+      - name: Run Sniper Script
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python sniper.py
+
+      - name: Commit and Push Updated State
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add state.json
+          # Only commit if state.json actually changed
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update state.json from Cron Run" && git push)
