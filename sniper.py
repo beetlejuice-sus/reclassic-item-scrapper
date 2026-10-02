@@ -16,24 +16,16 @@ def clean_number(text):
     return int(cleaned) if cleaned else 0
 
 def get_items():
-    """Reads item IDs from a published Google Sheet CSV (Column A)."""
     items = []
     try:
         resp = requests.get(GOOGLE_SHEET_URL, timeout=10)
         resp.raise_for_status()
-        
-        # Read the CSV line by line
         for line in resp.text.splitlines():
-            # Split by comma and take the first column
             first_col = line.split(',')[0].strip()
-            
-            # If it's a valid number, add it to our list
             if first_col.isdigit():
                 items.append(int(first_col))
-                
     except Exception as e:
         print(f"Error reading Google Sheet: {e}")
-    
     return items
 
 def load_state():
@@ -41,7 +33,7 @@ def load_state():
         try:
             with open(STATE_FILE, "r") as f:
                 return json.load(f)
-        except:
+        except Exception:
             pass
     return {}
 
@@ -60,8 +52,8 @@ def main():
         return
 
     state = load_state()
-    embed_fields = []
-    trigger_loud_alert = False
+    active_items = []
+    any_alert_triggered = False
     
     with requests.Session() as session:
         session.headers.update({
@@ -75,7 +67,7 @@ def main():
             url_api = f"https://reclassic.com.br/api/item-price-history.php?id={item_id}&period=30d"
             
             try:
-                # 1. Scrape Current Prices & Item Name
+                # 1. Scrape Current Market Prices
                 page_resp = session.get(url_page, timeout=10)
                 soup = BeautifulSoup(page_resp.text, 'html.parser')
                 
@@ -100,75 +92,127 @@ def main():
                     api_resp = session.get(url_api, timeout=10)
                     if api_resp.json().get("success"):
                         avg_30d = int(api_resp.json()["stats"]["avg_price"])
-                except: 
+                except Exception:
                     pass
 
-                # 3. Stateful Logic
-                item_highlights = []
+                # 3. Stateful Evaluation
+                item_changes = []
                 item_triggered_alert = False
+                price_increased = False
 
                 if item_id_str not in state:
                     state[item_id_str] = {"cash": cash_price, "zeny": zeny_price}
                     if cash_price > 0 or zeny_price > 0:
                         item_triggered_alert = True
-                        item_highlights.append("✨ Initial listing detected")
+                        item_changes.append("✨ Initial listing detected")
                 else:
                     prev = state[item_id_str]
                     
-                    if cash_price > 0 and prev["cash"] == 0:
-                        item_triggered_alert = True
-                        item_highlights.append("🆕 **New Cash listing!**")
-                    elif cash_price > 0 and cash_price < prev["cash"]:
-                        item_triggered_alert = True
-                        item_highlights.append(f"📉 **Cash Drop:** ~~{prev['cash']:,}~~ ➔ **{cash_price:,} Cash**")
-                        
-                    if zeny_price > 0 and prev["zeny"] == 0:
-                        item_triggered_alert = True
-                        item_highlights.append("🆕 **New Zeny listing!**")
-                    elif zeny_price > 0 and zeny_price < prev["zeny"]:
-                        item_triggered_alert = True
-                        item_highlights.append(f"📉 **Zeny Drop:** ~~{prev['zeny']:,}z~~ ➔ **{zeny_price:,}z**")
-                        
+                    # Cash tracking
+                    if cash_price > 0:
+                        if prev.get("cash", 0) == 0:
+                            item_triggered_alert = True
+                            item_changes.append("🆕 **New Cash listing!**")
+                        elif cash_price < prev.get("cash", 0):
+                            item_triggered_alert = True
+                            item_changes.append(f"📉 **Cash Drop:** ~~{prev['cash']:,}~~ ➔ **{cash_price:,} Cash**")
+                        elif cash_price > prev.get("cash", 0):
+                            price_increased = True
+                            item_changes.append(f"🔺 **Cash Up:** ~~{prev['cash']:,}~~ ➔ **{cash_price:,} Cash**")
+                            
+                    # Zeny tracking
+                    if zeny_price > 0:
+                        if prev.get("zeny", 0) == 0:
+                            item_triggered_alert = True
+                            item_changes.append("🆕 **New Zeny listing!**")
+                        elif zeny_price < prev.get("zeny", 0):
+                            item_triggered_alert = True
+                            item_changes.append(f"📉 **Zeny Drop:** ~~{prev['zeny']:,}z~~ ➔ **{zeny_price:,}z**")
+                        elif zeny_price > prev.get("zeny", 0):
+                            price_increased = True
+                            item_changes.append(f"🔺 **Zeny Up:** ~~{prev['zeny']:,}z~~ ➔ **{zeny_price:,}z**")
+                            
+                    # Super Deal tracking
                     if zeny_price > 0 and avg_30d > 0 and zeny_price <= (avg_30d * DEAL_THRESHOLD):
                         item_triggered_alert = True
-                        item_highlights.append(f"🔥 **Super Deal!** (Under 85% of 30d avg)")
+                        item_changes.append("🔥 **Super Deal!** (Under 85% of 30d avg)")
 
                     state[item_id_str] = {"cash": cash_price, "zeny": zeny_price}
 
-                # 4. Format Discord Message (ONLY for items with alerts)
                 if item_triggered_alert:
-                    trigger_loud_alert = True
-                    
-                    enc_name = urllib.parse.quote_plus(item_name)
-                    prices = []
-                    if cash_price > 0: prices.append(f"[**{cash_price:,} Cash**](https://reclassic.com.br/?to=marketplace&busca={enc_name})")
-                    if zeny_price > 0: prices.append(f"[**{zeny_price:,}z**](https://reclassic.com.br/?to=comercio&busca={enc_name}) *(Avg: {avg_30d:,}z)*")
-                    
-                    lines = [" > " + "\n > ".join(item_highlights)]
-                    if prices: lines.append(" | ".join(prices))
-                    
-                    embed_fields.append({
-                        "name": f"🚨 {item_name} (ID: {item_id})",
-                        "value": "\n".join(lines),
-                        "inline": False
+                    any_alert_triggered = True
+
+                # Only include in Discord overview if it actually has active listings
+                if cash_price > 0 or zeny_price > 0:
+                    active_items.append({
+                        "id": item_id,
+                        "name": item_name,
+                        "cash": cash_price,
+                        "zeny": zeny_price,
+                        "avg_30d": avg_30d,
+                        "triggered": item_triggered_alert,
+                        "increased": price_increased,
+                        "changes": item_changes
                     })
                     
             except Exception as e:
                 print(f"Failed ID {item_id}: {e}")
 
-    # Save new state back to the file so GitHub Actions can commit it
+    # Always persist updated prices for memory tracking
     save_state(state)
 
-    # 5. Send Webhook (Only if there are deals)
-    if embed_fields:
-        payload = {
-            "content": "🔥 **Market Alert: Price Drop / New Offer!**",
-            "embeds": [{"color": 16711680, "fields": embed_fields}]
-        }
-        requests.post(DISCORD_WEBHOOK_URL, json=payload)
-        print("Discord alert sent (silent)!")
-    else:
-        print("No new deals or price drops found.")
+    # 4. Only send if at least one item triggered an actual alert
+    if not any_alert_triggered:
+        print("No price drops or new listings. Sleeping silently.")
+        return
+
+    # Put alerted items at the top (0), increased items middle (1), stable items bottom (2)
+    sorted_items = sorted(active_items, key=lambda x: 0 if x["triggered"] else (1 if x["increased"] else 2))
+    embed_fields = []
+
+    for item in sorted_items:
+        enc_name = urllib.parse.quote_plus(item["name"])
+        prices = []
+        if item["cash"] > 0:
+            prices.append(f"[**{item['cash']:,} Cash**](https://reclassic.com.br/?to=marketplace&busca={enc_name})")
+        if item["zeny"] > 0:
+            avg_str = f" *(Avg: {item['avg_30d']:,}z)*" if item["avg_30d"] > 0 else ""
+            prices.append(f"[**{item['zeny']:,}z**](https://reclassic.com.br/?to=comercio&busca={enc_name}){avg_str}")
+
+        if item["triggered"]:
+            field_name = f"🚨 {item['name']} (ID: {item['id']})"
+        elif item["increased"]:
+            field_name = f"🔺 {item['name']} (ID: {item['id']})"
+        else:
+            field_name = f"• {item['name']} (ID: {item['id']})"
+
+        if item["changes"]:
+            field_val = " > " + "\n > ".join(item["changes"]) + "\n" + " | ".join(prices)
+        else:
+            field_val = " | ".join(prices)
+
+        embed_fields.append({
+            "name": field_name,
+            "value": field_val,
+            "inline": False
+        })
+
+    # Chunk fields into batches of 25 to respect Discord embed limits
+    embed_chunks = [embed_fields[i:i + 25] for i in range(0, len(embed_fields), 25)]
+    embeds = []
+    for idx, chunk in enumerate(embed_chunks):
+        embeds.append({
+            "title": "🔥 Market Update & Current Active Offers" if idx == 0 else None,
+            "color": 16711680 if idx == 0 else 0x2B2D31,
+            "fields": chunk
+        })
+
+    payload = {
+        "content": "🔥 **Market Alert: Price Drop / New Offer!**",
+        "embeds": embeds
+    }
+    requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    print("Discord alert sent with full active offer list!")
 
 if __name__ == "__main__":
     main()
