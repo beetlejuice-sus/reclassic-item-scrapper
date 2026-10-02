@@ -86,14 +86,39 @@ def main():
                             if "cash" in lbl.text.lower(): cash_price = clean_number(prc.text)
                             elif "zeny" in lbl.text.lower(): zeny_price = clean_number(prc.text)
 
-                # 2. API 30d Average
+                # 2. Extract Average and Last Sold (HTML First, API as Fallback)
                 avg_30d = 0
-                try:
-                    api_resp = session.get(url_api, timeout=10)
-                    if api_resp.json().get("success"):
-                        avg_30d = int(api_resp.json()["stats"]["avg_price"])
-                except Exception:
-                    pass
+                last_sold = 0
+                
+                # Attempt to pull directly from the HTML IDs you found
+                stat_avg_tag = soup.find(id="stat-avg")
+                if stat_avg_tag:
+                    avg_30d = clean_number(stat_avg_tag.text)
+                    
+                stat_last_tag = soup.find(id="stat-last-price")
+                if stat_last_tag:
+                    last_sold = clean_number(stat_last_tag.text)
+                
+                # Fallback to API if HTML was empty (e.g. if loaded via javascript later)
+                if avg_30d == 0 or last_sold == 0:
+                    try:
+                        api_resp = session.get(url_api, timeout=10)
+                        data = api_resp.json()
+                        if data.get("success"):
+                            stats = data.get("stats", {})
+                            if avg_30d == 0 and "avg_price" in stats and stats["avg_price"]:
+                                avg_30d = int(float(stats["avg_price"]))
+                            if last_sold == 0:
+                                if "last_price" in stats and stats["last_price"]: 
+                                    last_sold = int(float(stats["last_price"]))
+                                elif "latest_price" in stats and stats["latest_price"]: 
+                                    last_sold = int(float(stats["latest_price"]))
+                                elif "history" in data and isinstance(data["history"], list) and len(data["history"]) > 0:
+                                    last_entry = data["history"][-1]
+                                    if isinstance(last_entry, dict) and "price" in last_entry:
+                                        last_sold = int(float(last_entry["price"]))
+                    except Exception:
+                        pass
 
                 # 3. Stateful Evaluation
                 item_changes = []
@@ -132,10 +157,10 @@ def main():
                             price_increased = True
                             item_changes.append(f"🔺 **Zeny Up:** ~~{prev['zeny']:,}z~~ ➔ **{zeny_price:,}z**")
                             
-                    # Super Deal tracking
-                    if zeny_price > 0 and avg_30d > 0 and zeny_price <= (avg_30d * DEAL_THRESHOLD):
+                    # Super Deal tracking (Now accurately compares Cash price vs Cash Average)
+                    if cash_price > 0 and avg_30d > 0 and cash_price <= (avg_30d * DEAL_THRESHOLD):
                         item_triggered_alert = True
-                        item_changes.append("🔥 **Super Deal!** (Under 85% of 30d avg)")
+                        item_changes.append("🔥 **Super Deal!** (Cash under 85% of 30d avg)")
 
                     state[item_id_str] = {"cash": cash_price, "zeny": zeny_price}
 
@@ -150,6 +175,7 @@ def main():
                         "cash": cash_price,
                         "zeny": zeny_price,
                         "avg_30d": avg_30d,
+                        "last_sold": last_sold,
                         "triggered": item_triggered_alert,
                         "increased": price_increased,
                         "changes": item_changes
@@ -173,11 +199,19 @@ def main():
     for item in sorted_items:
         enc_name = urllib.parse.quote_plus(item["name"])
         prices = []
+        
+        # Format Cash string (with Avg and Last Sold)
         if item["cash"] > 0:
-            prices.append(f"[**{item['cash']:,} Cash**](https://reclassic.com.br/?to=marketplace&busca={enc_name})")
+            avg_str = ""
+            if item["avg_30d"] > 0 and item["last_sold"] > 0:
+                avg_str = f" *(Avg: {item['avg_30d']:,} | Last: {item['last_sold']:,})*"
+            elif item["avg_30d"] > 0:
+                avg_str = f" *(Avg: {item['avg_30d']:,})*"
+            prices.append(f"[**{item['cash']:,} Cash**](https://reclassic.com.br/?to=marketplace&busca={enc_name}){avg_str}")
+            
+        # Format Zeny string
         if item["zeny"] > 0:
-            avg_str = f" *(Avg: {item['avg_30d']:,}z)*" if item["avg_30d"] > 0 else ""
-            prices.append(f"[**{item['zeny']:,}z**](https://reclassic.com.br/?to=comercio&busca={enc_name}){avg_str}")
+            prices.append(f"[**{item['zeny']:,}z**](https://reclassic.com.br/?to=comercio&busca={enc_name})")
 
         if item["triggered"]:
             field_name = f"🚨 {item['name']} (ID: {item['id']})"
