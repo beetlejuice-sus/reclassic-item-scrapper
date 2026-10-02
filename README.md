@@ -7,7 +7,7 @@ This bot runs entirely in the cloud using GitHub Actions (zero server costs) and
 ---
 
 ## ⚡ Features
-* **24/7 Monitoring:** Automatically checks the market every 5 minutes.
+* **Lightning Fast:** Pings the market exactly every 5 minutes using a dedicated API trigger.
 * **Stateful Tracking:** Remembers previous prices to detect exact price drops and new undercuts.
 * **Smart Alerts:** Only pings Discord when an item is newly listed, drops in price, or falls below 85% of its 30-day average.
 * **Guild-Friendly UI:** Controlled entirely via a shared Google Sheet.
@@ -27,15 +27,51 @@ You do not need to edit the code to change what the bot is looking for. The bot 
 
 Google automatically updates the background data, and the bot will start tracking your new items on its next 5-minute cycle.
 
-*(Note: When you add a brand new item to the sheet, the bot will immediately send an "Initial listing detected" alert to Discord on its next run to establish the baseline price).*
+*(Note: When you add a brand new item to the sheet, the bot will immediately send an "✨ Initial listing detected" alert to Discord on its next run to establish the baseline price).*
 
 ---
 
-## 🛠️ How it Works (Under the Hood)
+## ⏱️ Why We Use an External Trigger (cron-job.org)
 
-1. **The Trigger:** A GitHub Actions cron job wakes up every 5 minutes (`.github/workflows/run.yml`).
-2. **The Fetch:** The script (`sniper.py`) downloads the latest item list from the Google Sheet CSV.
-3. **The Scrape:** It checks the ReClassic website and API for current Cash/Zeny prices and the 30-day average.
-4. **The Comparison:** It compares the current prices against its memory file (`state.json`).
-5. **The Alert:** If a deal is found, it securely pulls the Discord Webhook URL from GitHub Secrets and sends the alert.
-6. **The Memory:** It saves the new prices to `state.json` and pushes the updated file back to this repository so it's ready for the next run.
+While GitHub Actions has a built-in schedule feature, it acts as a "best-effort" queue. During periods of high platform load, GitHub can delay scheduled runs by 15 to 45 minutes. In a market sniper bot, a 30-minute delay means you lose the deal.
+
+To guarantee an **exact 5-minute interval**, this repository is configured to only run on demand via its API (`workflow_dispatch`). We use a free external service, **cron-job.org**, to send an authenticated API request to GitHub exactly every 5 minutes, bypassing GitHub's queue completely.
+
+---
+
+## 🚀 Setting up the 5-Minute Trigger (cron-job.org)
+
+If you need to set up the external trigger from scratch, follow these steps:
+
+### 1. Generate a GitHub Token
+1. Go to **Settings > Developer Settings > Personal access tokens (classic)** on GitHub.
+2. Generate a new token. Check the **`workflow`** and **`repo`** scopes.
+3. Copy the token (it starts with `ghp_` or `github_pat_`).
+
+### 2. Configure cron-job.org
+1. Create a free account on https://cron-job.org.
+2. Create a new cron job with the schedule set to **Every 5 minutes**.
+3. **URL:** `https://api.github.com/repos/YOUR_USERNAME/YOUR_REPOSITORY/actions/workflows/run.yml/dispatches`
+4. **Method:** `POST`
+5. **Request Body:** `{"ref": "main"}`
+6. **Headers (Crucial):** Add these 4 headers exactly:
+   * `Content-Type`: `application/json`
+   * `Accept`: `application/vnd.github+json`
+   * `Authorization`: `Bearer YOUR_GITHUB_TOKEN` *(Include the word Bearer and a space)*
+   * `User-Agent`: `cron-job-bot`
+
+Save the job, and it will run instantly and precisely every 5 minutes.
+
+---
+
+## 🔑 Renewing Your GitHub Token
+
+For security, GitHub Personal Access Tokens (PATs) expire. If your bot suddenly stops updating and sending messages, your token likely expired. When this happens, GitHub returns a `401 Unauthorized` error, which you can see in your cron-job.org history.
+
+**How to fix an expired token:**
+1. Go to your GitHub Developer Settings (https://github.com/settings/tokens).
+2. Generate a new token with **`workflow`** and **`repo`** permissions. (You can set the expiration up to 1 year).
+3. Copy the new token.
+4. Log into https://cron-job.org, edit your job, and open the **Headers** tab.
+5. Replace the old token in the `Authorization` header with the new one: `Bearer YOUR_NEW_TOKEN`.
+6. Save and click "Test Run" to verify it works!
