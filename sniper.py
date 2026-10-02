@@ -15,6 +15,10 @@ def clean_number(text):
     cleaned = re.sub(r'[^\d]', '', text)
     return int(cleaned) if cleaned else 0
 
+def format_br(num):
+    # Formata números com pontos para milhares (ex: 1.500.000)
+    return f"{num:,}".replace(",", ".")
+
 def get_items():
     items = []
     try:
@@ -25,30 +29,30 @@ def get_items():
             if first_col.isdigit():
                 items.append(int(first_col))
     except Exception as e:
-        print(f"Error reading Google Sheet: {e}")
+        print(f"Erro ao ler o Google Sheet: {e}")
     return items
 
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
-            with open(STATE_FILE, "r") as f:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             pass
     return {}
 
 def save_state(state):
-    with open(STATE_FILE, "w") as f:
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=4)
 
 def main():
     if not DISCORD_WEBHOOK_URL:
-        print("No Webhook URL found in environment variables!")
+        print("Nenhuma URL de Webhook encontrada nas variáveis de ambiente!")
         return
 
     items = get_items()
     if not items:
-        print("No items found in Google Sheet.")
+        print("Nenhum item encontrado no Google Sheet.")
         return
 
     state = load_state()
@@ -67,7 +71,7 @@ def main():
             url_api = f"https://reclassic.com.br/api/item-price-history.php?id={item_id}&period=30d"
             
             try:
-                # 1. Scrape Current Market Prices
+                # 1. Raspar Preços Atuais do Mercado
                 page_resp = session.get(url_page, timeout=10)
                 soup = BeautifulSoup(page_resp.text, 'html.parser')
                 
@@ -86,11 +90,10 @@ def main():
                             if "cash" in lbl.text.lower(): cash_price = clean_number(prc.text)
                             elif "zeny" in lbl.text.lower(): zeny_price = clean_number(prc.text)
 
-                # 2. Extract Average and Last Sold (HTML First, API as Fallback)
+                # 2. Extrair Média e Último Vendido (HTML primeiro, API como reserva)
                 avg_30d = 0
                 last_sold = 0
                 
-                # Attempt to pull directly from the HTML IDs you found
                 stat_avg_tag = soup.find(id="stat-avg")
                 if stat_avg_tag:
                     avg_30d = clean_number(stat_avg_tag.text)
@@ -99,7 +102,6 @@ def main():
                 if stat_last_tag:
                     last_sold = clean_number(stat_last_tag.text)
                 
-                # Fallback to API if HTML was empty (e.g. if loaded via javascript later)
                 if avg_30d == 0 or last_sold == 0:
                     try:
                         api_resp = session.get(url_api, timeout=10)
@@ -120,7 +122,7 @@ def main():
                     except Exception:
                         pass
 
-                # 3. Stateful Evaluation
+                # 3. Avaliação de Estado (Gatilhos)
                 item_changes = []
                 item_triggered_alert = False
                 price_increased = False
@@ -129,45 +131,44 @@ def main():
                     state[item_id_str] = {"cash": cash_price, "zeny": zeny_price}
                     if cash_price > 0 or zeny_price > 0:
                         item_triggered_alert = True
-                        item_changes.append("✨ Initial listing detected")
+                        item_changes.append("✨ Primeira oferta detectada")
                 else:
                     prev = state[item_id_str]
                     
-                    # Cash tracking
+                    # Monitoramento de Cash
                     if cash_price > 0:
                         if prev.get("cash", 0) == 0:
                             item_triggered_alert = True
-                            item_changes.append("🆕 **New Cash listing!**")
+                            item_changes.append("🆕 **Nova oferta em Cash!**")
                         elif cash_price < prev.get("cash", 0):
                             item_triggered_alert = True
-                            item_changes.append(f"📉 **Cash Drop:** ~~{prev['cash']:,}~~ ➔ **{cash_price:,} Cash**")
+                            item_changes.append(f"📉 **Queda (Cash):** ~~{format_br(prev['cash'])}~~ ➔ **{format_br(cash_price)} Cash**")
                         elif cash_price > prev.get("cash", 0):
                             price_increased = True
-                            item_changes.append(f"🔺 **Cash Up:** ~~{prev['cash']:,}~~ ➔ **{cash_price:,} Cash**")
+                            item_changes.append(f"🔺 **Aumento (Cash):** ~~{format_br(prev['cash'])}~~ ➔ **{format_br(cash_price)} Cash**")
                             
-                    # Zeny tracking
+                    # Monitoramento de Zeny
                     if zeny_price > 0:
                         if prev.get("zeny", 0) == 0:
                             item_triggered_alert = True
-                            item_changes.append("🆕 **New Zeny listing!**")
+                            item_changes.append("🆕 **Nova oferta em Zeny!**")
                         elif zeny_price < prev.get("zeny", 0):
                             item_triggered_alert = True
-                            item_changes.append(f"📉 **Zeny Drop:** ~~{prev['zeny']:,}z~~ ➔ **{zeny_price:,}z**")
+                            item_changes.append(f"📉 **Queda (Zeny):** ~~{format_br(prev['zeny'])}z~~ ➔ **{format_br(zeny_price)}z**")
                         elif zeny_price > prev.get("zeny", 0):
                             price_increased = True
-                            item_changes.append(f"🔺 **Zeny Up:** ~~{prev['zeny']:,}z~~ ➔ **{zeny_price:,}z**")
+                            item_changes.append(f"🔺 **Aumento (Zeny):** ~~{format_br(prev['zeny'])}z~~ ➔ **{format_br(zeny_price)}z**")
                             
-                    # Super Deal tracking (Now accurately compares Cash price vs Cash Average)
+                    # Super Oferta (NÃO aciona mais o alerta por conta própria, apenas exibe a tag)
                     if cash_price > 0 and avg_30d > 0 and cash_price <= (avg_30d * DEAL_THRESHOLD):
-                        item_triggered_alert = True
-                        item_changes.append("🔥 **Super Deal!** (Cash under 85% of 30d avg)")
+                        item_changes.append("🔥 **Super Oferta!** (Abaixo de 85% da média de 30d)")
 
                     state[item_id_str] = {"cash": cash_price, "zeny": zeny_price}
 
                 if item_triggered_alert:
                     any_alert_triggered = True
 
-                # Only include in Discord overview if it actually has active listings
+                # Só inclui na mensagem do Discord se houver ofertas ativas
                 if cash_price > 0 or zeny_price > 0:
                     active_items.append({
                         "id": item_id,
@@ -182,17 +183,17 @@ def main():
                     })
                     
             except Exception as e:
-                print(f"Failed ID {item_id}: {e}")
+                print(f"Falha no ID {item_id}: {e}")
 
-    # Always persist updated prices for memory tracking
+    # Sempre salva os preços atualizados
     save_state(state)
 
-    # 4. Only send if at least one item triggered an actual alert
+    # 4. Só envia o webhook se pelo menos um item acionar o alerta (queda/nova oferta)
     if not any_alert_triggered:
-        print("No price drops or new listings. Sleeping silently.")
+        print("Nenhuma queda de preço ou nova oferta. Nenhuma mensagem enviada.")
         return
 
-    # Put alerted items at the top (0), increased items middle (1), stable items bottom (2)
+    # Organiza os itens: acionados no topo (0), aumentos no meio (1), estáveis no final (2)
     sorted_items = sorted(active_items, key=lambda x: 0 if x["triggered"] else (1 if x["increased"] else 2))
     embed_fields = []
 
@@ -200,18 +201,18 @@ def main():
         enc_name = urllib.parse.quote_plus(item["name"])
         prices = []
         
-        # Format Cash string (with Avg and Last Sold)
+        # Formatação do texto de Cash (com Média e Último vendido)
         if item["cash"] > 0:
             avg_str = ""
             if item["avg_30d"] > 0 and item["last_sold"] > 0:
-                avg_str = f" *(Avg: {item['avg_30d']:,} | Last: {item['last_sold']:,})*"
+                avg_str = f" *(Média: {format_br(item['avg_30d'])} | Último: {format_br(item['last_sold'])})*"
             elif item["avg_30d"] > 0:
-                avg_str = f" *(Avg: {item['avg_30d']:,})*"
-            prices.append(f"[**{item['cash']:,} Cash**](https://reclassic.com.br/?to=marketplace&busca={enc_name}){avg_str}")
+                avg_str = f" *(Média: {format_br(item['avg_30d'])})*"
+            prices.append(f"[**{format_br(item['cash'])} Cash**](https://reclassic.com.br/?to=marketplace&busca={enc_name}){avg_str}")
             
-        # Format Zeny string
+        # Formatação do texto de Zeny
         if item["zeny"] > 0:
-            prices.append(f"[**{item['zeny']:,}z**](https://reclassic.com.br/?to=comercio&busca={enc_name})")
+            prices.append(f"[**{format_br(item['zeny'])}z**](https://reclassic.com.br/?to=comercio&busca={enc_name})")
 
         if item["triggered"]:
             field_name = f"🚨 {item['name']} (ID: {item['id']})"
@@ -231,22 +232,22 @@ def main():
             "inline": False
         })
 
-    # Chunk fields into batches of 25 to respect Discord embed limits
+    # Divide os campos em grupos de 25 para respeitar os limites do Discord
     embed_chunks = [embed_fields[i:i + 25] for i in range(0, len(embed_fields), 25)]
     embeds = []
     for idx, chunk in enumerate(embed_chunks):
         embeds.append({
-            "title": "🔥 Market Update & Current Active Offers" if idx == 0 else None,
+            "title": "🔥 Atualização do Mercado e Ofertas Ativas" if idx == 0 else None,
             "color": 16711680 if idx == 0 else 0x2B2D31,
             "fields": chunk
         })
 
     payload = {
-        "content": "🔥 **Market Alert: Price Drop / New Offer!**",
+        "content": "🚨 **Alerta do Mercado: Queda de Preço / Nova Oferta!**",
         "embeds": embeds
     }
     requests.post(DISCORD_WEBHOOK_URL, json=payload)
-    print("Discord alert sent with full active offer list!")
+    print("Alerta do Discord enviado com a lista completa de ofertas ativas!")
 
 if __name__ == "__main__":
     main()
